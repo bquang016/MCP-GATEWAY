@@ -1,0 +1,18 @@
+{
+  "dual-agent-bridge-hook": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node ./scripts/session-start.js",
+        "timeout": 10
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ./scripts/session-start.js",
+        "timeout": 4
+      }
+    ]
+  }
+}
