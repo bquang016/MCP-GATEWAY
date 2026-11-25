@@ -2,7 +2,7 @@
 
 MCP Gateway này giúp **ChatGPT/Codex lập kế hoạch** và **Antigravity thực thi code** trên cùng một trạng thái công việc. Mục tiêu là giảm việc copy-paste prompt, hạn chế quên context khi chat dài và vẫn giữ các bước phê duyệt quan trọng cho người dùng.
 
-## Dùng hằng ngày — chỉ cần nhớ 3 bước
+## Dùng hằng ngày — chỉ cần nhớ 4 bước
 
 - Bước 1: Mở folder dự án trong Antigravity.
 - Bước 2: Mở ChatGPT hoặc Codex, bật/tag **Dual-Agent Workflow Gateway** một lần rồi mô tả việc cần làm bằng tiếng Việt.
