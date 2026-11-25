@@ -4,9 +4,10 @@ MCP Gateway này giúp **ChatGPT/Codex lập kế hoạch** và **Antigravity th
 
 ## Dùng hằng ngày — chỉ cần nhớ 3 bước
 
-1. Mở folder dự án trong Antigravity.
-2. Mở ChatGPT hoặc Codex, bật/tag **Dual-Agent Workflow Gateway** một lần rồi mô tả việc cần làm bằng tiếng Việt.
-3. Khi Antigravity nhận task, kiểm tra phạm vi và bấm/nhắn xác nhận trước khi bắt đầu.
+Bước 1: Mở folder dự án trong Antigravity.
+Bước 2: Mở ChatGPT hoặc Codex, bật/tag **Dual-Agent Workflow Gateway** một lần rồi mô tả việc cần làm bằng tiếng Việt.
+Bước 3: Nhắn 1 câu gì đó cho Antigravity, ví dụ: "Kiểm tra workspace hiện tại" hoặc gửi lại *task_id để Antigravity tự động đăng ký workspace thông qua MCP.
+Bước 4: Khi Antigravity nhận task, kiểm tra phạm vi và bấm/nhắn xác nhận trước khi bắt đầu (nhớ chuyển sang model mạnh cho tác vụ nặng hoặc hoàn thiện 1 tính năng cụ thể để tránh sai sót, phải sửa lại code nhiều)
 
 Bạn không cần nhớ tên từng MCP tool. Agent tự chọn tool phù hợp dựa trên trạng thái workflow.
 
