@@ -151,12 +151,23 @@ test("Phase 2A execution queue: HITL, revision và chống chạy trùng", async
     });
 
     await t.test("Phase 5.1: task mới dispatch độc lập, không bị task legacy completed/chưa archive chặn", () => {
+      const intentContract = {
+        schemaVersion: "1.0" as const,
+        contractRevision: 0,
+        inScope: ["queue contract"],
+        outOfScope: ["unrelated files"],
+        doNotChange: ["public API"],
+        acceptanceCriteria: ["contract reaches executor"],
+        dependencies: [],
+        plannedFiles: [],
+      };
       const next = submitExecutionRequestForTask(
         {
           workspaceBindingId: bindingId,
           taskId: "second-independent-task",
           objective: "Execute a second independently approved task",
           userConfirmedPlanHandoff: true,
+          intentContract,
         },
         options
       );
@@ -164,6 +175,7 @@ test("Phase 2A execution queue: HITL, revision và chống chạy trùng", async
       if (!next.ok) return;
       assert.equal(next.data.status, "pending_user_start");
       assert.equal(next.data.taskId, "second-independent-task");
+      assert.deepEqual(next.data.intentContract, intentContract);
 
       const retry = submitExecutionRequestForTask(
         {

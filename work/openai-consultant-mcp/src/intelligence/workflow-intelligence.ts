@@ -13,6 +13,7 @@ import {
   resumeTask,
   ResumeTaskCompactOutput,
 } from "../memory/project-memory.js";
+import { GraphPreparationMetrics } from "../graph/types.js";
 
 export type MeasurementKind = "exact" | "estimated" | "baseline_estimated";
 export type TelemetryEventType =
@@ -25,7 +26,9 @@ export type TelemetryEventType =
   | "clarification_round"
   | "scope_correction"
   | "rework_event"
-  | "api_usage";
+  | "api_usage"
+  | "graph_context_prepared"
+  | "graph_execution_progress";
 
 interface TelemetryEvent {
   eventId: string;
@@ -36,6 +39,7 @@ interface TelemetryEvent {
   usedTokens: number;
   baselineTokens: number;
   savedTokens: number;
+  graph?: Partial<GraphPreparationMetrics> & { actualFilesRead?: number; fileBudgetExceeded?: boolean };
 }
 
 interface TelemetryFile {
@@ -70,6 +74,7 @@ export function recordTelemetryEvent(
     measurementKind: MeasurementKind;
     usedTokens: number;
     baselineTokens: number;
+    graph?: Partial<GraphPreparationMetrics> & { actualFilesRead?: number; fileBudgetExceeded?: boolean };
   },
   options?: RegistryOptions
 ): void {
@@ -87,6 +92,7 @@ export function recordTelemetryEvent(
       usedTokens: Math.max(0, Math.round(input.usedTokens)),
       baselineTokens: Math.max(0, Math.round(input.baselineTokens)),
       savedTokens: Math.round(input.baselineTokens - input.usedTokens),
+      ...(input.graph ? { graph: input.graph } : {}),
     };
     file.events.push(event);
     if (file.events.length > MAX_EVENTS) file.events = file.events.slice(-MAX_EVENTS);
@@ -107,6 +113,9 @@ export function getTelemetrySummary(
   scopeCorrections: number;
   reworkEvents: number;
   disclaimer: string;
+  graphContextEvents: number;
+  graphCacheHits: number;
+  broadScansAvoided: number;
 }> {
   const resolved = resolveToolWorkspace({ workspaceBindingId, registryOptions: options });
   if (!resolved.ok) return intelligenceError(resolved.errorCode, resolved.message, { workspaceId: null, displayName: null, rootFingerprint: null, workspaceResolution: "binding" });
@@ -124,11 +133,48 @@ export function getTelemetrySummary(
       clarificationRounds: events.filter((event) => event.eventType === "clarification_round").length,
       scopeCorrections: events.filter((event) => event.eventType === "scope_correction").length,
       reworkEvents: events.filter((event) => event.eventType === "rework_event").length,
+      graphContextEvents: events.filter((event) => event.eventType === "graph_context_prepared").length,
+      graphCacheHits: events.filter((event) => event.graph?.cacheHit).length,
+      broadScansAvoided: events.filter((event) => event.graph?.broadScanAvoided).length,
       disclaimer: "ChatGPT/Gemini Web token counts are estimated; only API usage events marked exact are exact.",
     };
   }, options);
   if (!locked.ok) return intelligenceError(locked.errorCode, locked.message, meta);
   return { ok: true, summaryText: "Đã tổng hợp telemetry token và rework cho workspace.", data: { ...locked.data, ...meta } };
+}
+
+export function recordGraphContextTelemetry(
+  workspaceId: string,
+  metrics: GraphPreparationMetrics,
+  options?: RegistryOptions
+): void {
+  recordTelemetryEvent({
+    workspaceId,
+    eventType: "graph_context_prepared",
+    measurementKind: "baseline_estimated",
+    usedTokens: metrics.capsuleEstimatedTokens,
+    baselineTokens: metrics.estimatedBaselineTokens,
+    graph: metrics,
+  }, options);
+}
+
+export function recordGraphExecutionTelemetry(
+  workspaceId: string,
+  actualFilesRead: number,
+  maxInitialFiles: number | undefined,
+  options?: RegistryOptions
+): void {
+  recordTelemetryEvent({
+    workspaceId,
+    eventType: "graph_execution_progress",
+    measurementKind: "estimated",
+    usedTokens: 0,
+    baselineTokens: 0,
+    graph: {
+      actualFilesRead: Math.max(0, Math.round(actualFilesRead)),
+      fileBudgetExceeded: maxInitialFiles !== undefined && actualFilesRead > maxInitialFiles,
+    },
+  }, options);
 }
 
 export function assessContextHealth(

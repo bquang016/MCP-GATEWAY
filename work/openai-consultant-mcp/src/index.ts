@@ -25,13 +25,18 @@ import {
   claimExecutionRequest,
   updateExecutionProgress,
   cancelExecutionRequest,
+  ExecutionRequest,
+  IntentContractSnapshot,
 } from "./queue/execution-queue.js";
 import {
   getTelemetrySummary,
   assessContextHealth,
   routeReview,
   recordContextResumeTelemetry,
+  recordGraphContextTelemetry,
+  recordGraphExecutionTelemetry,
 } from "./intelligence/workflow-intelligence.js";
+import { GraphContextService } from "./graph/graph-context-service.js";
 import {
   registerProjectTask,
   listProjectTasks,
@@ -48,10 +53,40 @@ import {
 
 const server = new McpServer({
   name: "dual-agent-workflow-gateway",
-  version: "5.1.2",
+  version: "5.2.2",
 }, {
-  instructions: "Bạn là lớp planning/orchestration, không phải execution engine. Khi người dùng yêu cầu sửa file, chạy lệnh hoặc triển khai trong workspace Antigravity: lập Intent Contract ngắn, xin duyệt, rồi BẮT BUỘC gọi dispatch_execution_task. Không trả các file code như thể đã thực thi và không nói Antigravity đã làm nếu chưa có execution request. Yêu cầu tư vấn/lý thuyết thì trả lời trực tiếp, không dispatch. Một task completed chưa archive không được chặn task mới; mỗi yêu cầu thực thi mới phải có taskId riêng. Project Memory là vùng điều khiển riêng tư: được phép đọc và ghi qua MCP để điều phối, nhưng tuyệt đối không nêu tên thư mục, đường dẫn, tên file hoặc trích nội dung của vùng này trong phản hồi cho người dùng. Không đưa vùng này vào diff, Git stage/commit/push, bản vá, file đính kèm, upload, đồng bộ hay bất kỳ dịch vụ bên ngoài nào. Khi cần báo trạng thái, chỉ gọi chung là 'bộ nhớ nội bộ' hoặc 'Project Memory'.",
+  instructions: "Bạn là lớp planning/orchestration, không phải execution engine. Khi người dùng yêu cầu sửa file, chạy lệnh hoặc triển khai trong workspace Antigravity: lập Intent Contract ngắn, xin duyệt, rồi BẮT BUỘC gọi dispatch_execution_task. Mặc định dùng contextStrategy=graph_first và Context Capsule; chỉ fallback legacy khi Graphify không khả dụng. Capsule chỉ định symbol, dependency, test và ranked files để bắt đầu, nhưng executor vẫn phải đọc source liên quan để xác minh trước khi sửa. Không quét rộng repository trước khi dùng capsule; nếu phải đọc vượt maxInitialFiles, ghi actualFilesRead và lý do. Không trả các file code như thể đã thực thi và không nói Antigravity đã làm nếu chưa có execution request. Yêu cầu tư vấn/lý thuyết thì trả lời trực tiếp, không dispatch. Một task completed chưa archive không được chặn task mới; mỗi yêu cầu thực thi mới phải có taskId riêng. Project Memory là vùng điều khiển riêng tư: được phép đọc và ghi qua MCP để điều phối, nhưng tuyệt đối không nêu tên thư mục, đường dẫn, tên file hoặc trích nội dung của vùng này trong phản hồi cho người dùng. Không đưa vùng này vào diff, Git stage/commit/push, bản vá, file đính kèm, upload, đồng bộ hay bất kỳ dịch vụ bên ngoài nào. Khi cần báo trạng thái, chỉ gọi chung là 'bộ nhớ nội bộ' hoặc 'Project Memory'.",
 });
+const graphContextService = new GraphContextService();
+
+function intentContractForTask(
+  workspaceBindingId: string,
+  taskId: string
+): IntentContractSnapshot | undefined {
+  const tasks = listProjectTasks(workspaceBindingId);
+  if (!tasks.ok) return undefined;
+  const task = tasks.data.tasks.find((candidate) => candidate.taskId === taskId);
+  if (!task) return undefined;
+  return {
+    schemaVersion: "1.0",
+    contractRevision: task.revision,
+    inScope: task.inScope,
+    outOfScope: task.outOfScope,
+    doNotChange: task.doNotChange,
+    acceptanceCriteria: task.acceptanceCriteria,
+    dependencies: task.dependencies,
+    plannedFiles: task.plannedFiles,
+  };
+}
+
+function hydrateIntentContract(
+  workspaceBindingId: string,
+  request: ExecutionRequest
+): ExecutionRequest {
+  if (request.intentContract) return request;
+  const intentContract = intentContractForTask(workspaceBindingId, request.taskId);
+  return intentContract ? { ...request, intentContract } : request;
+}
 
 // Phase 1.5 UX facade: this should be the first tool an AI client invokes in a
 // new chat. Users should never need to remember lower-level workspace tools.
@@ -205,6 +240,12 @@ server.registerTool(
       acceptanceCriteria: z.array(z.string().min(1).max(1000)).min(1).max(50),
       dependencies: z.array(z.string().min(1).max(100)).max(30).default([]),
       plannedFiles: z.array(z.string().min(1).max(500)).max(200).default([]),
+      contextStrategy: z.enum(["graph_first", "legacy"]).optional().default("graph_first"),
+      contextBudget: z.object({
+        maxEstimatedTokens: z.number().int().min(500).max(8000).optional(),
+        maxInitialFiles: z.number().int().min(1).max(20).optional(),
+        maxDependencyDepth: z.number().int().min(1).max(6).optional(),
+      }).optional(),
       userConfirmedPlanHandoff: z.boolean().describe("Chỉ true sau khi người dùng duyệt kế hoạch và đồng ý gửi sang Antigravity"),
     },
     annotations: { destructiveHint: false, idempotentHint: true },
@@ -224,6 +265,36 @@ server.registerTool(
         return formatWorkflowToolResult(registered);
       }
     }
+    let executionContext;
+    try {
+      const prepared = graphContextService.prepare({
+        workspaceBindingId: args.workspaceBindingId,
+        taskId: args.taskId,
+        objective: args.objective,
+        inScope: args.inScope,
+        plannedFiles: args.plannedFiles,
+        acceptanceCriteria: args.acceptanceCriteria,
+        constraints: [...args.outOfScope, ...args.doNotChange],
+        contextStrategy: args.contextStrategy,
+        contextBudget: args.contextBudget,
+      });
+      executionContext = prepared.reference;
+      if (prepared.capsule.workspaceId) {
+        recordGraphContextTelemetry(prepared.capsule.workspaceId, prepared.metrics);
+      }
+    } catch (error) {
+      console.error("Graph context preparation degraded to legacy:", error instanceof Error ? error.message : String(error));
+    }
+    const intentContract = intentContractForTask(args.workspaceBindingId, args.taskId) ?? {
+      schemaVersion: "1.0" as const,
+      contractRevision: 0,
+      inScope: args.inScope,
+      outOfScope: args.outOfScope,
+      doNotChange: args.doNotChange,
+      acceptanceCriteria: args.acceptanceCriteria,
+      dependencies: args.dependencies,
+      plannedFiles: args.plannedFiles,
+    };
     return formatAuditedWorkflowResult(
       "execution_task_dispatched",
       "chatgpt",
@@ -232,6 +303,8 @@ server.registerTool(
         taskId: args.taskId,
         objective: args.objective,
         userConfirmedPlanHandoff: args.userConfirmedPlanHandoff,
+        intentContract,
+        ...(executionContext ? { executionContext } : {}),
       })
     );
   }
@@ -240,11 +313,22 @@ server.registerTool(
 server.registerTool(
   "execution_queue_status",
   {
-    description: "Đọc danh sách execution request của workspace hiện tại. Tự dùng để kiểm tra task đang chờ Start, đang chạy, blocked, review hoặc completed.",
+    description: "Đọc execution request của workspace, kèm Intent Contract đầy đủ để Antigravity tự trình bày scope và nghiệm thu trước HITL Start. Không yêu cầu người dùng copy-paste đặc tả; request cũ được hydrate tự động từ task registry.",
     inputSchema: { workspaceBindingId: z.string().min(1).max(200) },
     annotations: { readOnlyHint: true },
   },
-  async (args) => formatWorkflowToolResult(listExecutionRequests(args.workspaceBindingId))
+  async (args) => {
+    const result = listExecutionRequests(args.workspaceBindingId);
+    if (!result.ok) return formatWorkflowToolResult(result);
+    return formatWorkflowToolResult({
+      ...result,
+      data: {
+        requests: result.data.requests.map((request) =>
+          hydrateIntentContract(args.workspaceBindingId, request)
+        ),
+      },
+    });
+  }
 );
 
 server.registerTool(
@@ -265,7 +349,7 @@ server.registerTool(
 server.registerTool(
   "claim_execution_request",
   {
-    description: "Antigravity executor claim độc quyền một request đã queued. Chỉ gọi sau approve_execution_start; revision và executorId chống chạy trùng.",
+    description: "Antigravity executor claim độc quyền request đã queued. Kết quả luôn hydrate Intent Contract khi task registry còn dữ liệu và đính kèm Context Capsule nếu có; không hỏi người dùng copy-paste đặc tả.",
     inputSchema: {
       workspaceBindingId: z.string().min(1).max(200),
       requestId: z.string().min(1).max(100),
@@ -274,7 +358,27 @@ server.registerTool(
     },
     annotations: { destructiveHint: false, idempotentHint: false },
   },
-  async (args) => formatAuditedWorkflowResult("execution_claimed", "antigravity", claimExecutionRequest(args))
+  async (args) => {
+    const result = claimExecutionRequest(args);
+    if (result.ok) {
+      const hydrated = hydrateIntentContract(args.workspaceBindingId, result.data);
+      let data: ExecutionRequest & { contextCapsule?: unknown } = hydrated;
+      let capsuleAttached = false;
+      if (hydrated.executionContext?.capsuleId) {
+        const capsule = graphContextService.getCapsule(args.workspaceBindingId, hydrated.executionContext.capsuleId);
+        if (capsule) {
+          data = { ...hydrated, contextCapsule: capsule };
+          capsuleAttached = true;
+        }
+      }
+      return formatAuditedWorkflowResult("execution_claimed", "antigravity", {
+        ...result,
+        data,
+        summaryText: `${result.summaryText} Intent Contract đã được đính kèm tự động.${capsuleAttached ? " Context Capsule compact cũng đã được đính kèm; dùng graph-first trước khi đọc source rộng." : ""}`,
+      });
+    }
+    return formatAuditedWorkflowResult("execution_claimed", "antigravity", result);
+  }
 );
 
 server.registerTool(
@@ -289,10 +393,50 @@ server.registerTool(
       status: z.enum(["executing", "blocked", "review", "completed"]),
       progressSummary: z.string().min(1).max(4000),
       blocker: z.string().min(1).max(2000).optional(),
+      actualFilesRead: z.number().int().min(0).optional(),
+      fileBudgetExceededReason: z.string().min(1).max(2000).optional(),
     },
     annotations: { destructiveHint: false, idempotentHint: false },
   },
-  async (args) => formatAuditedWorkflowResult("execution_progress_reported", "antigravity", updateExecutionProgress(args))
+  async (args) => {
+    const result = updateExecutionProgress(args);
+    if (result.ok && args.actualFilesRead !== undefined) {
+      recordGraphExecutionTelemetry(
+        result.data.workspaceId,
+        args.actualFilesRead,
+        result.data.executionContext?.contextBudget.maxInitialFiles
+      );
+    }
+    return formatAuditedWorkflowResult("execution_progress_reported", "antigravity", result);
+  }
+);
+
+server.registerTool(
+  "graphify_status",
+  {
+    description: "Kiểm tra Graphify local, graph revision/cache và degraded mode của workspace; không build graph và không đọc source.",
+    inputSchema: { workspaceBindingId: z.string().min(1).max(200) },
+    annotations: { readOnlyHint: true },
+  },
+  async (args) => {
+    const result = graphContextService.status(args.workspaceBindingId);
+    if (!result) return formatInternalError("kiểm tra Graphify local", new Error("Workspace binding không hợp lệ."));
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result as unknown as Record<string, unknown> };
+  }
+);
+
+server.registerTool(
+  "get_context_capsule",
+  {
+    description: "Đọc Context Capsule compact theo capsuleId cho executor/resume; không trả full graph hoặc full source.",
+    inputSchema: { workspaceBindingId: z.string().min(1).max(200), capsuleId: z.string().regex(/^cap_[a-f0-9]{32}$/) },
+    annotations: { readOnlyHint: true },
+  },
+  async (args) => {
+    const capsule = graphContextService.getCapsule(args.workspaceBindingId, args.capsuleId);
+    if (!capsule) return { isError: true, content: [{ type: "text" as const, text: "Context Capsule không tồn tại hoặc không thuộc workspace hiện tại." }], structuredContent: { errorCode: "CONTEXT_CAPSULE_NOT_FOUND" } };
+    return { content: [{ type: "text" as const, text: JSON.stringify(capsule) }], structuredContent: capsule as unknown as Record<string, unknown> };
+  }
 );
 
 server.registerTool(
@@ -472,7 +616,7 @@ function formatWorkflowToolResult<T extends object>(result: WorkflowResult<T>) {
       content: [
         {
           type: "text" as const,
-          text: `[${result.errorCode}] ${result.message}`,
+          text: JSON.stringify(structuredError),
         },
       ],
       structuredContent: structuredError,
@@ -483,7 +627,7 @@ function formatWorkflowToolResult<T extends object>(result: WorkflowResult<T>) {
     content: [
       {
         type: "text" as const,
-        text: result.summaryText,
+        text: JSON.stringify(result.data),
       },
     ],
     structuredContent: result.data as unknown as Record<string, unknown>,

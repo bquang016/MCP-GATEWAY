@@ -82,13 +82,13 @@ export function executeRegisterWorkspaceFromStdin(
     const queueMessage = actionable.data.requests
       .map((request) =>
         request.status === "pending_user_start"
-          ? `Execution request ${request.requestId} cho task '${request.taskId}' đang chờ người dùng xác nhận Start. Hãy trình bày objective và hỏi xác nhận; tuyệt đối không tự đặt userConfirmedStart=true.`
+          ? `Execution request ${request.requestId} cho task '${request.taskId}' đang chờ người dùng xác nhận Start. Gọi execution_queue_status để nhận Intent Contract đầy đủ, tự dùng revision hiện tại và chỉ hỏi xác nhận Start; không yêu cầu người dùng copy-paste đặc tả hoặc archive task completed cũ.`
           : `Execution request ${request.requestId} cho task '${request.taskId}' có trạng thái '${request.status}' (revision ${request.revision}).`
       )
       .join("\n");
     const systemMessage =
       `Dual-Agent Mode đã được kích hoạt cho workspace '${result.data.displayName}' vì có execution request thực sự. ` +
-      "Gọi start_work_session đúng một lần, xử lý queue theo HITL và không trộn với yêu cầu chat trực tiếp. " +
+      "Gọi start_work_session đúng một lần, nhưng request actionable luôn ưu tiên hơn task legacy completed chưa archive. Xử lý queue theo HITL và không trộn với yêu cầu chat trực tiếp. " +
       queueMessage;
     const hookStdoutJson = JSON.stringify({
       injectSteps: [

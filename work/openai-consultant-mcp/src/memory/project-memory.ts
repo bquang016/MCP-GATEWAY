@@ -66,6 +66,32 @@ export interface MemoryInitResult extends WorkspaceMetadataFields {
 }
 
 const PRIVATE_MEMORY_GIT_EXCLUDE_RULE = "/.ai/";
+const PRIVATE_GRAPH_GIT_EXCLUDE_RULES = [
+  "/graphify-out/",
+  "/.graphify-cache/",
+  "/.context-capsules/",
+];
+
+function ensureLocalGitExcludeRules(workspaceRoot: string, rules: string[]): boolean {
+  const gitMetadataPath = path.join(workspaceRoot, ".git");
+  if (!fs.existsSync(gitMetadataPath)) return false;
+  const metadataStat = fs.lstatSync(gitMetadataPath);
+  if (metadataStat.isSymbolicLink()) throw new Error("Git metadata path must not be a symbolic link.");
+  if (!metadataStat.isDirectory()) return false;
+  const infoDir = path.join(gitMetadataPath, "info");
+  const excludePath = path.join(infoDir, "exclude");
+  fs.mkdirSync(infoDir, { recursive: true });
+  let current = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf-8") : "";
+  const normalized = new Set(current.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean));
+  for (const rule of rules) {
+    if (normalized.has(rule)) continue;
+    if (current.length > 0 && !current.endsWith("\n")) current += "\n";
+    current += `${rule}\n`;
+    normalized.add(rule);
+  }
+  fs.writeFileSync(excludePath, current, "utf-8");
+  return true;
+}
 
 /**
  * Keeps the private workflow store out of normal Git discovery without
@@ -73,46 +99,11 @@ const PRIVATE_MEMORY_GIT_EXCLUDE_RULE = "/.ai/";
  * repository metadata and is safe to apply repeatedly.
  */
 export function ensurePrivateMemoryGitExcluded(workspaceRoot: string): boolean {
-  const gitMetadataPath = path.join(workspaceRoot, ".git");
-  if (!fs.existsSync(gitMetadataPath)) {
-    return false;
-  }
+  return ensureLocalGitExcludeRules(workspaceRoot, [PRIVATE_MEMORY_GIT_EXCLUDE_RULE]);
+}
 
-  const metadataStat = fs.lstatSync(gitMetadataPath);
-  if (metadataStat.isSymbolicLink()) {
-    throw new Error("Git metadata path must not be a symbolic link.");
-  }
-
-  // A normal checkout stores repository-local excludes here. Worktree .git
-  // files are deliberately not followed because their target is outside the
-  // selected workspace and may be shared with other checkouts.
-  if (!metadataStat.isDirectory()) {
-    return false;
-  }
-
-  const infoDir = path.join(gitMetadataPath, "info");
-  const excludePath = path.join(infoDir, "exclude");
-  fs.mkdirSync(infoDir, { recursive: true });
-
-  const current = fs.existsSync(excludePath)
-    ? fs.readFileSync(excludePath, "utf-8")
-    : "";
-  const normalizedRules = current
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (normalizedRules.includes(PRIVATE_MEMORY_GIT_EXCLUDE_RULE)) {
-    return true;
-  }
-
-  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-  fs.writeFileSync(
-    excludePath,
-    `${current}${separator}${PRIVATE_MEMORY_GIT_EXCLUDE_RULE}\n`,
-    "utf-8"
-  );
-  return true;
+export function ensureGraphArtifactsGitExcluded(workspaceRoot: string): boolean {
+  return ensureLocalGitExcludeRules(workspaceRoot, PRIVATE_GRAPH_GIT_EXCLUDE_RULES);
 }
 
 export interface AttachActiveWorkspaceInput {

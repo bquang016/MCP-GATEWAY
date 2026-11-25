@@ -64,15 +64,15 @@ test("MCP Stdio JSON-RPC Integration Test", async (t) => {
         clientInfo: { name: "test-client", version: "1.0.0" },
       });
       assert.equal(res.result.serverInfo.name, "dual-agent-workflow-gateway");
-      assert.equal(res.result.serverInfo.version, "5.1.2");
+      assert.equal(res.result.serverInfo.version, "5.2.2");
       assert.match(res.result.instructions, /Project Memory.*riêng tư/i);
       assert.match(res.result.instructions, /không.*Git stage\/commit\/push/i);
     });
 
-    await t.test("tools/list phản hồi đủ 32 tools qua Phase 5.1 opt-in dispatch và đúng annotations", async () => {
+    await t.test("tools/list phản hồi đủ 34 tools, gồm Graphify context tools, và đúng annotations", async () => {
       const res = await sendRequest("tools/list", {});
       const tools = res.result.tools;
-      assert.equal(tools.length, 32);
+      assert.equal(tools.length, 34);
 
       const findTool = (name: string) => tools.find((tool: any) => tool.name === name);
 
@@ -319,6 +319,7 @@ test("MCP Stdio JSON-RPC Integration Test", async (t) => {
       });
       assert.equal(compactRes.result.isError, undefined);
       const compactData = compactRes.result.structuredContent;
+      const compactTextData = JSON.parse(compactRes.result.content[0].text);
       assert.equal(compactData.hasApprovedPlan, true);
       assert.equal(compactData.taskId, "STDIO-TASK-1");
       assert.equal(compactData.revision, 1);
@@ -331,6 +332,7 @@ test("MCP Stdio JSON-RPC Integration Test", async (t) => {
       assert.equal("projectContext" in compactData, false);
       assert.equal("taskState" in compactData, false);
       assert.equal(compactData.workspaceResolution, "environment");
+      assert.equal(compactTextData.taskId, "STDIO-TASK-1");
 
       const fullRes = await sendRequest("tools/call", {
         name: "resume_task",
@@ -441,6 +443,7 @@ test("MCP Stdio JSON-RPC Integration Test", async (t) => {
       });
       assert.equal(startSessionRes.result.isError, undefined);
       const startSessionData = startSessionRes.result.structuredContent;
+      const startSessionTextData = JSON.parse(startSessionRes.result.content[0].text);
       assert.equal(startSessionData.sessionReady, true);
       assert.equal(startSessionData.mode, "new_task");
       assert.equal(startSessionData.projectMemoryInitialized, true);
@@ -448,6 +451,7 @@ test("MCP Stdio JSON-RPC Integration Test", async (t) => {
       assert.equal(startSessionData.displayName, path.basename(tempSecondWorkspace));
       assert.equal("canonicalRoot" in startSessionData, false);
       assert.equal(JSON.stringify(startSessionRes).includes(tempSecondWorkspace), false);
+      assert.equal(startSessionTextData.bindingId, startSessionData.bindingId);
 
       const attachRes = await sendRequest("tools/call", {
         name: "attach_active_workspace",
@@ -482,6 +486,103 @@ test("MCP Stdio JSON-RPC Integration Test", async (t) => {
         boundStatusRes.result.structuredContent.workspaceResolution,
         "binding"
       );
+
+      // Dispatch stores the complete Intent Contract. Simulate a pre-5.2.1
+      // request by removing the snapshot, then verify status + claim hydrate it
+      // from the task registry without asking the user to copy/paste anything.
+      const dispatchRes = await sendRequest("tools/call", {
+        name: "dispatch_execution_task",
+        arguments: {
+          workspaceBindingId: attachData.bindingId,
+          taskId: "intent-hydration-test",
+          objective: "Verify automatic Intent Contract hydration",
+          inScope: ["queue status", "claim payload"],
+          outOfScope: ["unrelated workflow changes"],
+          doNotChange: ["existing HITL semantics"],
+          acceptanceCriteria: ["No manual specification copy is required"],
+          dependencies: [],
+          plannedFiles: [],
+          contextStrategy: "legacy",
+          userConfirmedPlanHandoff: true,
+        },
+      });
+      assert.equal(dispatchRes.result.isError, undefined);
+      const dispatched = dispatchRes.result.structuredContent;
+      const dispatchedText = JSON.parse(dispatchRes.result.content[0].text);
+      assert.deepEqual(dispatched.intentContract.inScope, ["queue status", "claim payload"]);
+      assert.deepEqual(dispatchedText.intentContract.inScope, ["queue status", "claim payload"]);
+
+      const queuePath = path.join(tempRegistryDir, "execution-queue.json");
+      const queueFile = JSON.parse(fs.readFileSync(queuePath, "utf-8"));
+      delete queueFile.requests[dispatched.requestId].intentContract;
+      fs.writeFileSync(queuePath, JSON.stringify(queueFile), "utf-8");
+
+      const queueStatusRes = await sendRequest("tools/call", {
+        name: "execution_queue_status",
+        arguments: { workspaceBindingId: attachData.bindingId },
+      });
+      const hydratedPending = queueStatusRes.result.structuredContent.requests.find(
+        (request: any) => request.requestId === dispatched.requestId
+      );
+      assert.deepEqual(hydratedPending.intentContract.acceptanceCriteria, [
+        "No manual specification copy is required",
+      ]);
+      const queueTextData = JSON.parse(queueStatusRes.result.content[0].text);
+      const hydratedTextPending = queueTextData.requests.find(
+        (request: any) => request.requestId === dispatched.requestId
+      );
+      assert.deepEqual(hydratedTextPending.intentContract.acceptanceCriteria, [
+        "No manual specification copy is required",
+      ]);
+
+      const taskListRes = await sendRequest("tools/call", {
+        name: "list_project_tasks",
+        arguments: { workspaceBindingId: attachData.bindingId },
+      });
+      const taskListText = JSON.parse(taskListRes.result.content[0].text);
+      assert.deepEqual(
+        taskListText.tasks.find((task: any) => task.taskId === "intent-hydration-test").doNotChange,
+        ["existing HITL semantics"]
+      );
+
+      const capsuleRes = await sendRequest("tools/call", {
+        name: "get_context_capsule",
+        arguments: {
+          workspaceBindingId: attachData.bindingId,
+          capsuleId: dispatched.executionContext.capsuleId,
+        },
+      });
+      const capsuleText = JSON.parse(capsuleRes.result.content[0].text);
+      assert.equal(capsuleText.taskId, "intent-hydration-test");
+
+      const approveRes = await sendRequest("tools/call", {
+        name: "approve_execution_start",
+        arguments: {
+          workspaceBindingId: attachData.bindingId,
+          requestId: dispatched.requestId,
+          expectedRevision: 0,
+          userConfirmedStart: true,
+        },
+      });
+      assert.equal(approveRes.result.isError, undefined);
+
+      const claimRes = await sendRequest("tools/call", {
+        name: "claim_execution_request",
+        arguments: {
+          workspaceBindingId: attachData.bindingId,
+          requestId: dispatched.requestId,
+          expectedRevision: 1,
+          executorId: "antigravity:intent-hydration-test",
+        },
+      });
+      assert.equal(claimRes.result.isError, undefined);
+      assert.deepEqual(claimRes.result.structuredContent.intentContract.doNotChange, [
+        "existing HITL semantics",
+      ]);
+      const claimTextData = JSON.parse(claimRes.result.content[0].text);
+      assert.deepEqual(claimTextData.intentContract.doNotChange, [
+        "existing HITL semantics",
+      ]);
 
       // Detach binding
       const detachRes = await sendRequest("tools/call", {

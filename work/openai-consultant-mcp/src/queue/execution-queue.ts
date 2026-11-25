@@ -13,6 +13,7 @@ import {
   resumeTask,
   ResumeTaskCompactOutput,
 } from "../memory/project-memory.js";
+import { ExecutionContextReference } from "../graph/types.js";
 
 export const EXECUTION_QUEUE_SCHEMA_VERSION = "1.0";
 export const EXECUTION_QUEUE_FILE = "execution-queue.json";
@@ -25,6 +26,17 @@ export type ExecutionStatus =
   | "review"
   | "completed"
   | "cancelled";
+
+export interface IntentContractSnapshot {
+  schemaVersion: "1.0";
+  contractRevision: number;
+  inScope: string[];
+  outOfScope: string[];
+  doNotChange: string[];
+  acceptanceCriteria: string[];
+  dependencies: string[];
+  plannedFiles: string[];
+}
 
 export interface ExecutionRequest {
   requestId: string;
@@ -43,6 +55,10 @@ export interface ExecutionRequest {
   executionLeaseExpiresAt: string | null;
   progressSummary: string;
   blocker: string | null;
+  intentContract?: IntentContractSnapshot;
+  executionContext?: ExecutionContextReference;
+  actualFilesRead?: number;
+  fileBudgetExceededReason?: string | null;
 }
 
 interface QueueFile {
@@ -185,6 +201,8 @@ export function submitExecutionRequestForTask(
     taskId: string;
     objective: string;
     userConfirmedPlanHandoff: boolean;
+    intentContract?: IntentContractSnapshot;
+    executionContext?: ExecutionContextReference;
   },
   options?: QueueOptions
 ): WorkflowResult<ExecutionRequest> {
@@ -240,6 +258,8 @@ export function submitExecutionRequestForTask(
       executionLeaseExpiresAt: null,
       progressSummary: "Đang chờ người dùng phê duyệt Start trong Antigravity.",
       blocker: null,
+      ...(input.intentContract ? { intentContract: input.intentContract } : {}),
+      ...(input.executionContext ? { executionContext: input.executionContext } : {}),
     };
     queue.requests[request.requestId] = request;
     writeJsonAtomic(dataDir, EXECUTION_QUEUE_FILE, queue);
@@ -356,7 +376,7 @@ export function claimExecutionRequest(
 }
 
 export function updateExecutionProgress(
-  input: { workspaceBindingId: string; requestId: string; executorId: string; expectedRevision: number; status: "executing" | "blocked" | "review" | "completed"; progressSummary: string; blocker?: string },
+  input: { workspaceBindingId: string; requestId: string; executorId: string; expectedRevision: number; status: "executing" | "blocked" | "review" | "completed"; progressSummary: string; blocker?: string; actualFilesRead?: number; fileBudgetExceededReason?: string },
   options?: QueueOptions
 ): WorkflowResult<ExecutionRequest> {
   return mutateRequest(input.workspaceBindingId, input.requestId, options, (request, now) => {
@@ -364,7 +384,11 @@ export function updateExecutionProgress(
     if (input.expectedRevision !== request.revision) return queueError("REVISION_CONFLICT", "Execution request đã thay đổi; không cập nhật bằng revision cũ.", meta, request.revision);
     if (request.executorId !== input.executorId) return queueError("EXECUTOR_MISMATCH", "Chỉ executor đã claim mới được cập nhật tiến độ.", meta, request.revision);
     if (!["executing", "blocked", "review"].includes(request.status)) return queueError("INVALID_EXECUTION_TRANSITION", `Không thể cập nhật từ trạng thái '${request.status}'.`, meta, request.revision);
-    const updated = { ...request, status: input.status, revision: request.revision + 1, updatedAt: now.toISOString(), progressSummary: input.progressSummary, blocker: input.status === "blocked" ? (input.blocker ?? "Chưa nêu blocker") : null, executionLeaseExpiresAt: input.status === "executing" ? new Date(now.getTime() + (options?.executionLeaseMs ?? 15 * 60 * 1000)).toISOString() : null };
+    const budget = request.executionContext?.contextBudget.maxInitialFiles;
+    if (input.actualFilesRead !== undefined && budget !== undefined && input.actualFilesRead > budget && !input.fileBudgetExceededReason?.trim()) {
+      return queueError("FILE_BUDGET_REASON_REQUIRED", `Đã đọc ${input.actualFilesRead} file, vượt ngân sách ${budget}; cần ghi lý do.`, meta, request.revision);
+    }
+    const updated = { ...request, status: input.status, revision: request.revision + 1, updatedAt: now.toISOString(), progressSummary: input.progressSummary, blocker: input.status === "blocked" ? (input.blocker ?? "Chưa nêu blocker") : null, executionLeaseExpiresAt: input.status === "executing" ? new Date(now.getTime() + (options?.executionLeaseMs ?? 15 * 60 * 1000)).toISOString() : null, ...(input.actualFilesRead !== undefined ? { actualFilesRead: Math.max(0, Math.round(input.actualFilesRead)), fileBudgetExceededReason: input.fileBudgetExceededReason?.trim() || null } : {}) };
     return { ok: true, summaryText: `Đã cập nhật execution '${request.requestId}' sang '${input.status}'.`, data: updated };
   });
 }
