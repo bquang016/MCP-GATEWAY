@@ -19,7 +19,7 @@ function readDashboardSummary(dataDir = getRegistryDataDir()) {
   const sum = (fn: (event: any) => number) => events.reduce((total, event) => total + fn(event), 0);
   return {
     generatedAt: new Date().toISOString(),
-    service: { status: "ok", version: "5.2.2", bind: "127.0.0.1" },
+    service: { status: "ok", version: "5.3.0", bind: "127.0.0.1" },
     workspaces,
     execution: { total: requests.length, pendingUserStart: requests.filter((r) => r.status === "pending_user_start").length, executing: requests.filter((r) => r.status === "executing").length, blocked: requests.filter((r) => r.status === "blocked").length },
     tasks: { total: taskList.length, active: taskList.filter((t) => t.status === "active").length, blocked: taskList.filter((t) => t.status === "blocked").length, completed: taskList.filter((t) => t.status === "completed").length },

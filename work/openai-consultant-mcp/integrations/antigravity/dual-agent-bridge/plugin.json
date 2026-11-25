@@ -1,7 +1,7 @@
 {
   "name": "dual-agent-bridge",
   "displayName": "Dual-Agent Workflow Bridge",
-  "version": "5.2.2",
+  "version": "5.3.0",
   "description": "Opt-in Dual-Agent workflow: normal Antigravity chats stay fast; queued ChatGPT tasks use HITL, multi-task state, telemetry, audit and dashboard."
 }
 

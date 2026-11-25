@@ -53,7 +53,7 @@ import {
 
 const server = new McpServer({
   name: "dual-agent-workflow-gateway",
-  version: "5.2.2",
+  version: "5.3.0",
 }, {
   instructions: "Bạn là lớp planning/orchestration, không phải execution engine. Khi người dùng yêu cầu sửa file, chạy lệnh hoặc triển khai trong workspace Antigravity: lập Intent Contract ngắn, xin duyệt, rồi BẮT BUỘC gọi dispatch_execution_task. Mặc định dùng contextStrategy=graph_first và Context Capsule; chỉ fallback legacy khi Graphify không khả dụng. Capsule chỉ định symbol, dependency, test và ranked files để bắt đầu, nhưng executor vẫn phải đọc source liên quan để xác minh trước khi sửa. Không quét rộng repository trước khi dùng capsule; nếu phải đọc vượt maxInitialFiles, ghi actualFilesRead và lý do. Không trả các file code như thể đã thực thi và không nói Antigravity đã làm nếu chưa có execution request. Yêu cầu tư vấn/lý thuyết thì trả lời trực tiếp, không dispatch. Một task completed chưa archive không được chặn task mới; mỗi yêu cầu thực thi mới phải có taskId riêng. Project Memory là vùng điều khiển riêng tư: được phép đọc và ghi qua MCP để điều phối, nhưng tuyệt đối không nêu tên thư mục, đường dẫn, tên file hoặc trích nội dung của vùng này trong phản hồi cho người dùng. Không đưa vùng này vào diff, Git stage/commit/push, bản vá, file đính kèm, upload, đồng bộ hay bất kỳ dịch vụ bên ngoài nào. Khi cần báo trạng thái, chỉ gọi chung là 'bộ nhớ nội bộ' hoặc 'Project Memory'.",
 });

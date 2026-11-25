@@ -64,7 +64,7 @@ test("MCP Stdio JSON-RPC Integration Test", async (t) => {
         clientInfo: { name: "test-client", version: "1.0.0" },
       });
       assert.equal(res.result.serverInfo.name, "dual-agent-workflow-gateway");
-      assert.equal(res.result.serverInfo.version, "5.2.2");
+      assert.equal(res.result.serverInfo.version, "5.3.0");
       assert.match(res.result.instructions, /Project Memory.*riêng tư/i);
       assert.match(res.result.instructions, /không.*Git stage\/commit\/push/i);
     });
